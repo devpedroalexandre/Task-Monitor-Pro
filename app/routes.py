@@ -14,24 +14,11 @@ def status():
 
 @main.route('/backup')
 def backup():
-    import shutil, datetime, os
+    from .backup_new import criar_backup_novo
+    resultado = criar_backup_novo()
+    registrar_log(resultado)
+    return resultado
 
-    origem = 'database/tarefas.db'
-    destino_dir = 'backup'
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    destino = os.path.join(destino_dir, f'tarefas_backup_{timestamp}.db')
-
-    try:
-        if not os.path.exists(origem):
-            return f"❌ Erro: banco de dados não encontrado em '{origem}'"
-
-        os.makedirs(destino_dir, exist_ok=True)
-        shutil.copy(origem, destino)
-        registrar_log(f"Backup criado: {destino}")
-        return f"✅ Backup criado com sucesso: {destino}"
-    except Exception as e:
-        registrar_log(f"Erro ao criar backup: {str(e)}")
-        return f"❌ Erro ao criar backup: {str(e)}"
 
 @main.route('/logs')
 def logs():
@@ -101,6 +88,21 @@ def rede():
         })
     except Exception as e:
         return jsonify({"erro": str(e)})
+
+@main.route('/rede/historico')
+def rede_historico():
+    import psutil
+    import datetime
+    try:
+        net = psutil.net_io_counters()
+        return jsonify({
+            "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+            "enviado": round(net.bytes_sent / (1024 * 1024), 2),
+            "recebido": round(net.bytes_recv / (1024 * 1024), 2)
+        })
+    except Exception as e:
+        return jsonify({"erro": str(e)})
+
 
 @main.route('/hardware')
 def hardware():

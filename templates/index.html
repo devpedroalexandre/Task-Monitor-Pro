@@ -26,6 +26,14 @@
       color: #f1f1f1 !important;
       border-color: #f1f1f1 !important;
     }
+    .dark-mode .card {
+      background-color: #1e1e1e;
+      border-color: #333;
+    }
+    .dark-mode .card-header {
+      background-color: #0d6efd !important;
+      border-color: #333;
+    }
     .theme-toggle {
       position: absolute;
       top: 20px;
@@ -61,10 +69,29 @@
     <div id="painel-status" class="mt-4" style="display:none;"><h4>Status do Sistema</h4><ul id="status-list" class="list-group"></ul></div>
     <div id="painel-logs" class="mt-4" style="display:none;"><h4>Logs</h4><ul id="logs-list" class="list-group"></ul></div>
     <div id="painel-processos" class="mt-4" style="display:none;"><h4>Processos</h4><ul id="processos-list" class="list-group"></ul></div>
-    <div id="painel-rede" class="mt-4" style="display:none;"><h4>Rede</h4><ul id="rede-list" class="list-group"></ul></div>
+    
+    <!-- Painel de Rede -->
+    <div id="painel-rede" class="mt-4" style="display:none;">
+      <h4>Rede</h4>
+      <ul id="rede-list" class="list-group"></ul>
+      
+      <!-- GRÁFICO DE REDE EM TEMPO REAL -->
+      <div class="card mt-4">
+        <div class="card-header bg-primary text-white">
+          <h5>📊 Oscilação de Rede em Tempo Real</h5>
+        </div>
+        <div class="card-body">
+          <canvas id="redeChart" width="400" height="100"></canvas>
+        </div>
+      </div>
+    </div>
+    
     <div id="painel-hardware" class="mt-4" style="display:none;"><h4>Hardware</h4><ul id="hardware-list" class="list-group"></ul></div>
     <div id="painel-uptime" class="mt-4" style="display:none;"><h4>Uptime</h4><ul id="uptime-list" class="list-group"></ul></div>
   </div>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <script>
     function alternarTema() {
@@ -73,6 +100,10 @@
 
     function esconderTodos() {
       document.querySelectorAll('[id^="painel-"]').forEach(p => p.style.display = 'none');
+      if (window.intervaloGraficoRede) {
+        clearInterval(window.intervaloGraficoRede);
+        window.intervaloGraficoRede = null;
+      }
     }
 
     function mostrarPainel(tipo) {
@@ -110,32 +141,50 @@
         });
       }
 
+      // REDE COM OLHOS INDEPENDENTES - CORRIGIDO
       if (tipo === 'rede') {
         fetch('/rede').then(res => res.json()).then(dados => {
-          let mostrar = false;
+          // Estados independentes para cada IP
+          let mostrarLocal = false;
+          let mostrarPublico = false;
 
           const atualizarRede = () => {
             document.getElementById('rede-list').innerHTML = `
               <li class="list-group-item d-flex justify-content-between align-items-center">
-                IP Local: ${mostrar ? dados.ip_local : '••••••••'}
-                <button class="btn btn-sm btn-outline-secondary" onclick="alternarIP()">👁️</button>
+                <span>IP Local: <strong>${mostrarLocal ? dados.ip_local : '••••••••'}</strong></span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="alternarIPLocal()">
+                  ${mostrarLocal ? '🔒' : '👁️'}
+                </button>
               </li>
               <li class="list-group-item d-flex justify-content-between align-items-center">
-                IP Público: ${mostrar ? dados.ip_publico : '••••••••'}
-                <button class="btn btn-sm btn-outline-secondary" onclick="alternarIP()">👁️</button>
+                <span>IP Público: <strong>${mostrarPublico ? dados.ip_publico : '••••••••'}</strong></span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="alternarIPPublico()">
+                  ${mostrarPublico ? '🔒' : '👁️'}
+                </button>
               </li>
               <li class="list-group-item">Enviado: ${dados.enviado} MB</li>
               <li class="list-group-item">Recebido: ${dados.recebido} MB</li>
             `;
           };
 
-          window.alternarIP = () => {
-            mostrar = !mostrar;
+          // Função para alternar APENAS IP Local
+          window.alternarIPLocal = () => {
+            mostrarLocal = !mostrarLocal;
             atualizarRede();
           };
 
+          // Função para alternar APENAS IP Público
+          window.alternarIPPublico = () => {
+            mostrarPublico = !mostrarPublico;
+            atualizarRede();
+          };
+
+          // Renderiza pela primeira vez (com IPs ocultos)
           atualizarRede();
           document.getElementById('painel-rede').style.display = 'block';
+          
+          // Inicia o gráfico de rede
+          iniciarGraficoRede();
         });
       }
 
@@ -155,7 +204,7 @@
         });
       }
 
-            if (tipo === 'uptime') {
+      if (tipo === 'uptime') {
         fetch('/uptime').then(res => res.json()).then(dados => {
           document.getElementById('uptime-list').innerHTML = `
             <li class="list-group-item">Tempo Ativo: ${dados.horas}h ${dados.minutos}min</li>
@@ -191,6 +240,121 @@
         }
         mostrarPainel('processos');
       });
+    }
+
+    // ====================================
+    // GRÁFICO DE REDE EM TEMPO REAL
+    // ====================================
+    let redeChart = null;
+    let ultimoEnviado = 0;
+    let ultimoRecebido = 0;
+
+    function iniciarGraficoRede() {
+      if (redeChart) {
+        redeChart.destroy();
+      }
+
+      const redeCtx = document.getElementById('redeChart').getContext('2d');
+      redeChart = new Chart(redeCtx, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            {
+              label: 'Download (MB)',
+              data: [],
+              borderColor: 'rgb(75, 192, 192)',
+              backgroundColor: 'rgba(75, 192, 192, 0.1)',
+              borderWidth: 2,
+              tension: 0.4,
+              fill: true
+            },
+            {
+              label: 'Upload (MB)',
+              data: [],
+              borderColor: 'rgb(255, 99, 132)',
+              backgroundColor: 'rgba(255, 99, 132, 0.1)',
+              borderWidth: 2,
+              tension: 0.4,
+              fill: true
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          scales: {
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: 'MB/s'
+              }
+            },
+            x: {
+              title: {
+                display: true,
+                text: 'Tempo'
+              }
+            }
+          },
+          plugins: {
+            legend: {
+              display: true,
+              position: 'top'
+            }
+          },
+          animation: {
+            duration: 500
+          }
+        }
+      });
+
+      ultimoEnviado = 0;
+      ultimoRecebido = 0;
+
+      atualizarGraficoRede();
+      window.intervaloGraficoRede = setInterval(atualizarGraficoRede, 2000);
+    }
+
+    function atualizarGraficoRede() {
+      fetch('/rede/historico')
+        .then(response => response.json())
+        .then(data => {
+          if (data.erro) {
+            console.error('Erro:', data.erro);
+            return;
+          }
+
+          const agora = new Date().toLocaleTimeString('pt-BR');
+          const downloadAtual = data.recebido;
+          const uploadAtual = data.enviado;
+
+          if (ultimoRecebido === 0) {
+            ultimoRecebido = downloadAtual;
+            ultimoEnviado = uploadAtual;
+            return;
+          }
+
+          const taxaDownload = Math.max(0, (downloadAtual - ultimoRecebido)).toFixed(2);
+          const taxaUpload = Math.max(0, (uploadAtual - ultimoEnviado)).toFixed(2);
+
+          ultimoRecebido = downloadAtual;
+          ultimoEnviado = uploadAtual;
+
+          redeChart.data.labels.push(agora);
+          redeChart.data.datasets[0].data.push(parseFloat(taxaDownload));
+          redeChart.data.datasets[1].data.push(parseFloat(taxaUpload));
+
+          if (redeChart.data.labels.length > 20) {
+            redeChart.data.labels.shift();
+            redeChart.data.datasets[0].data.shift();
+            redeChart.data.datasets[1].data.shift();
+          }
+
+          redeChart.update('none');
+        })
+        .catch(error => console.error('Erro:', error));
     }
   </script>
 </body>
